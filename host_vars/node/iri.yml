@@ -1,0 +1,2 @@
+# List of neighbor addresses separated by space
+iri_neighbors: tcp://auto01.iota-tangle.io:15666 tcp://auto02.iota-tangle.io:15666 tcp://auto03.iota-tangle.io:15666

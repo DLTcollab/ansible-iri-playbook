@@ -2,4 +2,4 @@
 # Here the host on which to install and run iri
 # If using a remote host use either IP or a resolvable name.
 # Also, remove the ansible_connection=local if a remote host.
-localhost ansible_connection=local
+node ansible_host=example.com ansible_user=ubuntu
