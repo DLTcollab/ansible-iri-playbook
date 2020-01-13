@@ -1,0 +1,29 @@
+[Unit]
+Description=IOTA FullNode
+After=network-online.target
+
+[Service]
+WorkingDirectory={{ iri_workdir }}
+EnvironmentFile=-{{ config_dir }}/iri
+ExecStart=/usr/bin/java{% if prefer_ipv4_stack is defined and prefer_ipv4_stack|bool %} -Djava.net.preferIPv4Stack=true{% endif %} -Xmx${JAVA_MEM} -Xms${JAVA_INIT_MEM} -Xmn${JAVA_HEAP_MEM} -Xss1024k -Djava.awt.headless=true -jar ${IRI_JAR_FILE} -c ${IRI_CONFIG_FILE} --port ${IRI_API_PORT} --neighboring-socket-address ${NEIGHBORING_SOCKET_ADDRESS} --neighboring-socket-port ${NEIGHBORING_SOCKET_PORT} --neighbors "${IRI_NEIGHBORS}" --remote-limit-api "${REMOTE_LIMIT_API}" $OPTIONS
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=process
+Restart=on-failure
+RestartSec=10
+Type=simple
+User={{ iri_username }}
+Group={{ iri_username }}
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=iri
+
+# Restrict process
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+LimitNOFILE={{ iri_open_files_limit }}
+
+[Install]
+WantedBy=multi-user.target

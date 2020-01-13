@@ -1,0 +1,1431 @@
+#!/bin/bash
+set -o pipefail
+
+# This is just a proof-of-concept. Use with care.
+# Only use if you installed your node using iri-playbook
+
+if [[ $EUID -ne 0 ]]; then
+   echo "This script must be run as root"
+   echo "Please change to root: 'sudo su -' and re-run"
+   exit 1
+fi
+
+clear
+[ -f "$HOME/.iric" ] && . "$HOME/.iric"
+
+OS=unknown
+VER=unknown
+EDITOR="${EDITOR:-nano}"
+VERSION_TEMP=0.8.0
+__VERSION__=$VERSION_TEMP
+CUR_DIR=$(pwd)
+PID_FILE=/var/run/iric.pid
+WIDTH=78
+export NEWT_COLORS='
+window=,
+'
+
+# Check if another process of iric is already running.
+if [ -e "$PID_FILE" ]
+then
+    PID_FROM_FILE=$(cat "$PID_FILE")
+    if ps -fq $PID_FROM_FILE | grep -q "$(basename $0)$"
+    then
+        echo "ERROR: another instance of $(basename $0) is already running with pid ${PID_FROM_FILE}."
+        exit 1
+    fi
+fi
+
+# Cleanup function
+function cleanup() {
+    rm -f "$PID_FILE"
+    cd "$CUR_DIR"
+    trap "" EXIT
+    clear
+}
+
+# Write pid to pidfile
+echo -n $$ >"$PID_FILE"
+
+# Set exit trap
+trap cleanup INT TERM EXIT
+
+function pause(){
+   read -p "$*"
+   clear
+}
+
+# Get OS and Dist
+function set_dist() {
+    if [ -f /etc/os-release ]; then
+        # freedesktop.org and systemd
+        . /etc/os-release
+        OS=$NAME
+        VER=$VERSION_ID
+    elif type lsb_release >/dev/null 2>&1; then
+        # linuxbase.org
+        OS=$(lsb_release -si)
+        VER=$(lsb_release -sr)
+    elif [ -f /etc/lsb-release ]; then
+        # For some versions of Debian/Ubuntu without lsb_release command
+        . /etc/lsb-release
+        OS=$DISTRIB_ID
+        VER=$DISTRIB_RELEASE
+    elif [ -f /etc/debian_version ]; then
+        # Older Debian/Ubuntu/etc.
+        OS=Debian
+        VER=$(cat /etc/debian_version)
+    elif [ -f /etc/SuSe-release ]; then
+        # Older SuSE/etc.
+        echo "Unsupported OS."
+        exit 1
+    elif [ -f /etc/redhat-release ]; then
+        # Older Red Hat, CentOS, etc.
+        echo "Old OS version. Minimum required is 7."
+        exit 1
+    else
+        # Fall back to uname, e.g. "Linux <version>", also works for BSD, etc.
+        OS=$(uname -s)
+        VER=$(uname -r)
+    fi
+}
+
+# Admin settings
+function set_admin_user() {
+    USER_CHOICE=$(whiptail --inputbox "Pick a name for the administrator account:" 8 $WIDTH ${ADMIN_USER} --title "Username (allowed regex: a-zA-Z0-9_)" 3>&1 1>&2 2>&3)
+    RC=$?
+    if [[ $RC -eq 0 ]]; then
+        echo -n "${USER_CHOICE}"
+    else
+        echo -n "${ADMIN_USER}"
+    fi
+}
+
+function get_admin_user() {
+    ADMIN_USER=$(set_admin_user)
+    if [[ "$ADMIN_USER" =~ [^a-zA-Z0-9_] ]]; then
+        whiptail --title "Invalid Username!" \
+                 --msgbox "Username can only contain alphanumeric characters and underscores." \
+                 8 $WIDTH
+        get_admin_user
+    fi
+}
+
+function compare_versions() {
+    local FIRST_VERSION=$1
+    local EVAL_STR=$2
+    local SECOND_VERSION=$3
+
+    local GET_BOOL=$(python -c "from distutils.version import StrictVersion; print StrictVersion('$FIRST_VERSION') $EVAL_STR StrictVersion('$SECOND_VERSION')")
+    if [[ "$GET_BOOL" == "True" ]]
+    then
+        return 0
+    elif [[ "$GET_BOOL" == "False" ]]
+    then
+        return 1
+    fi
+}
+
+function set_admin_password_a() {
+    whiptail --passwordbox "please enter your secret password" 8 $WIDTH --title "password dialog" 3>&1 1>&2 2>&3
+}
+
+function set_admin_password_b() {
+    whiptail --passwordbox "please repeat" 8 $WIDTH --title "password dialog" 3>&1 1>&2 2>&3
+}
+
+function get_admin_password() {
+    local PASSWORD_A=$(set_admin_password_a)
+    local PASSWORD_B=$(set_admin_password_b)
+
+    if [ "$PASSWORD_A" != "$PASSWORD_B" ]; then
+        whiptail --title "Passwords Mismatch!" \
+                 --msgbox "Passwords do not match, please try again." \
+                 8 $WIDTH
+        get_admin_password
+    fi
+
+    PASSWD_CHECK=$(echo -n "$PASSWORD_A" | cracklib-check)
+    if [[ $(echo "$PASSWD_CHECK" | awk {'print $2'}) != "OK" ]]; then
+        whiptail --title "Weak Password!" \
+                 --msgbox "Please choose a better password:$(echo ${PASSWD_CHECK}|cut -d: -f2-)" \
+                 8 $WIDTH
+        get_admin_password
+    fi
+    ADMIN_PASSWORD="${PASSWORD_A}"
+}
+
+### Playbook ###
+function verify_playbook() {
+    local OUTPUT
+    local HEIGHT
+    local RC
+    if [ ! -d /opt/iri-playbook ]; then
+        whiptail --title "Missing Playbook!" \
+                 --msgbox "ERROR: Cannot find the iri-playbook in /opt/iri-playbook!" \
+                 8 $WIDTH
+        return 1
+    fi
+    cd /opt/iri-playbook
+    OUTPUT=$(git pull 2>&1)
+    RC=$?
+    HEIGHT=$(expr $(echo "$OUTPUT"|wc -l) + 10)
+    if [[ $RC -ne 0 ]]; then
+        whiptail --title "Git Errors" \
+                 --msgbox "Errors when trying to update the playbook repository: $OUTPUT" \
+                 $HEIGHT $WIDTH
+        return 1
+    fi
+}
+
+function network_rewrite_update() {
+
+    # Set config file and firewall
+    if [[ "$OS" =~ ^(CentOS|Red) ]]; then
+        SYSCONFIG_FILE=/etc/sysconfig/iri
+        if [ -x /bin/firewall-cmd ]; then
+            if ! /bin/firewall-cmd --list-ports --permanent | grep -q '15600/tcp'; then
+                # Try to open the port but don't fail the script if it fails.
+                echo "Open peering port 15600/tcp"
+                /bin/firewall-cmd --add-port=15600/tcp --permanent || /bin/true
+                /bin/firewall-cmd --reload
+            fi
+        fi
+    elif [[ "$OS" =~ ^(Ubuntu|Debian) ]]; then
+        SYSCONFIG_FILE=/etc/default/iri
+        if [ -x /usr/sbin/ufw ]; then
+            # Try to open the port but don't fail the script if it fails.
+            echo "Open peering port 15600/tcp"
+            /usr/sbin/ufw allow 15600/tcp || /bin/true
+        fi
+    fi
+
+    # Check config file exists. Will just throw an error to the user if not found.
+    if  [ ! -f "$SYSCONFIG_FILE" ]; then
+        whiptail --title "Error!" \
+             --msgbox "ERROR: Failed to find configuration file ${SYSCONFIG_FILE}\n\nSetting options for network rewrite failed." \
+             12 $WIDTH
+        return 1
+    fi
+
+    # If this variable doesn't exist in the config file, this node
+    # should be updated with the new options.
+    if ! grep -q "^NEIGHBORING_SOCKET_ADDRESS" "$SYSCONFIG_FILE"; then
+       cat <<EOF >> "$SYSCONFIG_FILE"
+# *** Network rewrite added options
+# TCP neighboring port listens on this address on the node.
+# The value 0.0.0.0 means "all interfaces".
+NEIGHBORING_SOCKET_ADDRESS=0.0.0.0
+# TCP peering port
+NEIGHBORING_SOCKET_PORT=15600
+EOF
+    fi
+
+    # Remove UDP configuration
+    sed -i '/UDP/d' "$SYSCONFIG_FILE"
+
+    # Remove old TCP peering port configuration 
+    sed -i '/TCP_RECEIVER_PORT/d' "$SYSCONFIG_FILE"
+    sed -i '/TCP peering port/d' "$SYSCONFIG_FILE"
+
+    if [ ! -e /var/lib/iri/iri.ini ]; then
+        # Weirdly, no config file?
+        whiptail --title "Error!" \
+             --msgbox "ERROR: Failed to find configuration file /var/lib/iri/iri.ini\n\nSetting options for network rewrite failed." \
+             12 $WIDTH
+        return 1
+    fi
+
+    # Update the iri.ini without overwriting anything
+    if ! grep -q "Network rewrite options" /var/lib/iri/iri.ini; then
+        cat <<EOF >> /var/lib/iri/iri.ini
+
+; *Network rewrite options*
+# Defines the interval at which to try to reconnect/disconnect wanted neighbors.
+#RECONNECT_ATTEMPT_INTERVAL_SECONDS = 60
+# Controls auto-tethering, this was previously controlled via TESTNET true,
+# default is false (also in testnet mode).
+#AUTO_TETHERING_ENABLED = false
+# Rename of MAX_PEERS, defines the max number of connected neighbors.
+#MAX_NEIGHBORS = 3
+# These two values are configured elsewhere in the iri-playbook's installtion:
+# Debian/Ubuntu: /etc/default/iri. Centos: /etc/sysconfig/iri
+#NEIGHBORING_SOCKET_ADDRESS
+#NEIGHBORING_SOCKET_PORT
+EOF
+    fi
+
+    # Update the service file
+    cd /opt/iri-playbook && ansible-playbook -i inventory \
+                                -v site.yml \
+                                --tags=iri_service_file
+    if [[ $? -ne 0 ]]; then
+        whiptail --title "Error!" \
+                  --msgbox "ERROR: Failed upgrading IRI." \
+                  8 $WIDTH
+        return 1
+    fi 
+}
+
+### IRI ###
+function get_latest_iri_release {
+    curl -H 'Cache-Control: no-cache' -s -m 5 -f https://api.github.com/repos/DLTcollab/iri/releases/latest | awk '/tag_name/{print $2}' | tr -d '"v,'
+}
+
+function upgrade_iri() {
+    echo "Checking for updates..."
+    local IRI_LATEST="$(get_latest_iri_release)"
+    if [[ $? -ne 0 ]]; then
+        whiptail --title "Error!" \
+                 --msgbox "ERROR: Failed to get IRI latest version\n${IRI_LATEST}" \
+                 8 $WIDTH
+        return 1
+    fi
+    clear
+    local IRI_VERSION=$(grep ^api_version $HOME/.nbctl | cut -d: -f2- | sed 's/ *//g')
+    if [[ $? -ne 0 ]]; then
+        whiptail --title "Error!" \
+                 --msgbox "ERROR: Cannot find $HOME/.nbctl" \
+                 8 $WIDTH
+        return 1
+    fi
+
+    ## TODO: FIX no need for RELEASE removal here
+    IRI_LATEST_CLEAN="$(echo $IRI_LATEST | tr -d '\-COACH')"
+    if compare_versions $IRI_VERSION '>=' $IRI_LATEST_CLEAN; then
+        if ! (whiptail --title "No Updates" \
+                 --yesno "You already have the latest version: ${IRI_VERSION}.\nDo you want to proceed anyway? (will re-download)" \
+                 --defaultno \
+                 10 $WIDTH) then
+            return
+        else
+            local NO_CONFIRM=1
+        fi
+    fi
+
+    if [ -z "$NO_CONFIRM" ]; then
+        if ! (whiptail --title "Upgrade IRI" \
+                     --yesno "Are you sure you want to upgrade IRI from ${IRI_VERSION} to ${IRI_LATEST_CLEAN}?\nWARNING: only do this if you know what your are doing!" \
+                     --defaultno \
+                     8 $WIDTH) then
+            return
+        fi
+    fi
+
+    verify_playbook
+    if [[ $? -ne 0 ]]; then
+        whiptail --title "Error!" \
+                 --msgbox "ERROR: Cannot upgrade IRI." \
+                 8 $WIDTH
+        return 1
+    fi
+    echo "Downloading new version..."
+
+
+    TFILE=$(mktemp /tmp/iri-${IRI_LATEST_CLEAN}.XXXXXXXXX)
+    # TODO: remove RELEASE in next versions
+    wget "https://github.com/DLTcollab/iri/releases/download/v${IRI_LATEST}/iri-${IRI_LATEST}.jar" -O "$TFILE"
+    if [[ $? -ne 0 ]]; then
+         whiptail --title "Error!" \
+                  --msgbox "ERROR: Failed upgrading IRI." \
+                  8 $WIDTH
+         rm -f "$TFILE"
+         return 1
+    fi
+    echo "Move '$TFILE' to '/var/lib/iri/target/iri-${IRI_LATEST_CLEAN}.jar' ..."
+    mv "$TFILE" "/var/lib/iri/target/iri-${IRI_LATEST_CLEAN}.jar" && chmod 644 "/var/lib/iri/target/iri-${IRI_LATEST_CLEAN}.jar"
+    echo "Update iri configuration files..."
+    IRI_CONFIG="$(grep ^file /root/.nbctl | cut -d: -f2)"
+    sed -i "s/^IRI_VERSION=.*$/IRI_VERSION=$IRI_LATEST_CLEAN/" $IRI_CONFIG
+    sed -i "s/^api_version.*$/api_version: $IRI_LATEST_CLEAN/" $HOME/.nbctl
+
+    #
+    # Network rewrite, update old nodes.
+    #
+    # Based on OS/Dist, set config file
+    echo "[[[ * Apply network rewrite changes if needed * ]]]"
+    network_rewrite_update
+    if [[ $? -ne 0 ]]; then
+         whiptail --title "Error!" \
+                  --msgbox "ERROR: Failed updating node for network rewrite!" \
+                  8 $WIDTH
+         rm -f "$TFILE"
+         return 1
+    fi
+
+    echo "Restart IRI, this can take a few moments..."
+    systemctl restart iri
+    pause "Update finished successfully. Nevertheless, it is recommended to check the status of IRI. Press ENTER to return to menu."
+    clear
+}
+
+### Monitoring ###
+function upgrade_monitoring() {
+    if (whiptail --title "Upgrade Monitoring" \
+                 --yesno "Are you sure you want to upgrade monitoring services?" \
+                 --defaultno \
+                 8 $WIDTH) then
+        verify_playbook
+        if [[ $? -ne 0 ]]; then
+             whiptail --title "Error!" \
+                      --msgbox "ERROR: Cannot upgrade monitoring." \
+                      8 $WIDTH
+             return 1
+        fi
+
+        # Enable ZMQ
+        grep -q ^ZMQ_ENABLED /var/lib/iri/iri.ini || echo "ZMQ_ENABLED = true" >>/var/lib/iri/iri.ini && systemctl restart iri
+
+        # Upgrade iota-prom-exporter and dashboards
+        cd /opt/iri-playbook && \
+            ansible-playbook \
+            -i inventory \
+            -v site.yml \
+            --tags=iri_ssl,prometheus_config,monitoring_deps,iota_prom_exporter,grafana_config \
+            -e overwrite=yes \
+            -e wait_for_grafana=false
+        [[ $? -ne 0 ]] && MSG="Updating monitoring failed!!! Check output above for errors." || MSG="Update finished successfully!"
+        pause "$MSG Press ENTER to return to menu."
+        clear
+    fi
+}
+
+
+### Haproxy ###
+function enable_https() {
+    local POW
+    local SSL_EMAIL
+    local SSL_DOMAIN
+    local ENABLE_NGINX_CERT
+
+    if ! (whiptail --title "Enable HTTPS" \
+                 --yesno "This option will enable HTTPS on IRI API port via HAProxy (port 14267 by default).\nAny previous configuration to HAProxy configuration will be overwritten.\nDo you want to proceed?" \
+                 --defaultno \
+                 12 $WIDTH) then
+        return 1
+    fi
+
+    if (whiptail --title "Enable PoW" \
+                 --yesno "Do you want to enable PoW (attachToTangle) on your node?" \
+                 --defaultno \
+                 12 $WIDTH) then
+            POW=enabled
+    else
+            POW=disabled
+    fi
+
+    verify_playbook
+    if [[ $? -ne 0 ]]; then
+         whiptail --title "Error!" \
+                  --msgbox "ERROR: Cannot enable HTTPS." \
+                  8 $WIDTH
+         return 1
+    fi
+
+    # Enable or disable PoW on this node via variable override file
+    if [[ "$POW" == "enabled" ]]; then
+        echo "haproxy_deny_regex: '(get|remove|add)Neighbors'" > /opt/iri-playbook/group_vars/all/z-haproxy-regex-override.yml
+    else
+        echo "haproxy_deny_regex: '(get|remove|add)Neighbors|attachToTangle|interruptAttachingToTangle'" > /opt/iri-playbook/group_vars/all/z-haproxy-regex-override.yml
+    fi
+
+    # Make sure we configure haproxy to listen on all interfaces, thereby enabling it.
+    haproxy_listen_all
+
+    # Enable haproxy https via variable override file
+    echo "haproxy_https: True" > /opt/iri-playbook/group_vars/all/z-haproxy-enable-https.yml
+    cd /opt/iri-playbook && git pull && ansible-playbook -i inventory site.yml -v --tags=iri_ssl,loadbalancer_role,certbot -e overwrite=yes
+    if [[ $? -ne 0 ]]; then
+        pause "Enabling HTTPS failed!!! Check output above for errors."
+        clear
+        return 1
+    else
+        clear
+        if ! (whiptail --title "Request SSL Certificate" \
+                 --yesno "HTTPS/SSL was enabled successfully. If you haven't done so yet, you can proceed in the next step to request a valid certificate for your domain. You must have a fully qualified domain name pointing to the IP address of your server.\n\nDo you want to proceed?" \
+                 --defaultno \
+                 18 $WIDTH) then
+            return
+        fi
+    fi
+
+    SSL_EMAIL=$(whiptail --inputbox "Enter your email address to register your SSL vertificate with:" 8 $WIDTH --title "Enter Email" 3>&1 1>&2 2>&3)
+    if [[ $? -ne 0 ]]; then
+        return
+    fi
+
+    SSL_DOMAIN=$(whiptail --inputbox "Enter the domain name to register the SSL certificate with:" 8 $WIDTH --title "Enter FQDN" 3>&1 1>&2 2>&3)
+    if [[ $? -ne 0 ]]; then
+        return
+    fi
+
+    if (whiptail --title "Configure Nginx" \
+        --yesno "Do you also want to configure this certificate for nginx (IOTA Peer Manager, Grafana etc.) ?" \
+        --defaultno \
+        12 $WIDTH) then
+        ENABLE_NGINX_CERT=yes
+    else
+        ENABLE_NGINX_CERT=false
+    fi
+
+    if ! (whiptail --title "Verify Details" \
+          --yesno "You entered email '${SSL_EMAIL}' with domain '${SSL_DOMAIN}' and configure nginx with the certificate: '${ENABLE_NGINX_CERT}'\n\nIs this correct?" \
+          --defaultno \
+          12 $WIDTH) then
+        return
+    fi
+
+    # Run the script to request a certificate
+    /usr/local/bin/certbot-haproxy.sh ${SSL_EMAIL} ${SSL_DOMAIN}
+    if [[ $? -ne 0 ]]; then
+        pause "SSL Certificate request failed. See output above for more details."
+        clear
+        return 1
+    fi
+
+    # Subsequent requests to create new certificates (for example, original
+    # directory was wiped) certbot will start appending an index for path name
+    # We need to make sure we find a directory.
+    FULL_PATH=$(find /etc/letsencrypt/live -type d -name "${SSL_DOMAIN}*" -print -quit)
+
+    # Will ensure subsequent playbook runs will use haproxy.pem
+    if [ -f "${FULL_PATH}/haproxy.pem" ]; then
+        echo "ssl_certkey_file: ${FULL_PATH}/haproxy.pem" > /opt/iri-playbook/group_vars/all/z-ssl-override.yml
+    fi
+
+    # Will configure nginx to use the let's encrypt certificates
+    if [[ $ENABLE_NGINX_CERT == "yes" ]] && [ -f "${FULL_PATH}/cert.pem" ]; then
+        if ! grep -q "^ssl_cert_file: ${FULL_PATH}/fullchain.pem" /opt/iri-playbook/group_vars/all/z-ssl-override.yml; then
+            cat <<EOF >> /opt/iri-playbook/group_vars/all/z-ssl-override.yml
+ssl_cert_file: ${FULL_PATH}/cert.pem
+ssl_key_file: ${FULL_PATH}/privkey.pem
+ssl_bundle_cert: ${FULL_PATH}/fullchain.pem
+create_selfsigned_cert: False
+letsencrypt: True
+EOF
+        fi
+        cd /opt/iri-playbook && ansible-playbook -i inventory -v site.yml --tags=configure_nginx_ssl
+    fi
+
+    pause "Done. Check above output to see the status of the request."
+    clear
+}
+
+function haproxy_listen_all() {
+    # Expect to find 0.0.0.0 on same line or max 2 after var declaration.
+    # If not found, add bind to all interfaces to override file.
+    if ! grep ^lb_bind_addresses /opt/iri-playbook/group_vars/all/z-installer-override.yml -A2 | grep -q '0.0.0.0'; then
+        echo "lb_bind_addresses: ['0.0.0.0']" >> /opt/iri-playbook/group_vars/all/z-installer-override.yml
+    fi
+}
+
+function enable_haproxy() {
+    local DEFAULT_MSG="Are you sure you want to enable wallet access only via HAProxy?\nThis will disable port 14265 externally and make 14267 accessible.\nIn addition, all the REMOTE_LIMIT_API commands will be under control of HAProxy and no longer via IRI configuration files."
+    [ -n "$1" ] && { DEFAULT_MSG=$1; }
+    if (whiptail --title "HAProxy" \
+                 --yesno "$DEFAULT_MSG" \
+                 --defaultno \
+                 8 $WIDTH) then
+        verify_playbook
+        if [[ $? -ne 0 ]]; then
+             whiptail --title "Error!" \
+                      --msgbox "ERROR: haproxy task failed." \
+                      8 $WIDTH
+             return 1
+        fi
+
+	# Make sure we configure haproxy to listen on all interfaces, thereby enabling it.
+        haproxy_listen_all
+
+        cd /opt/iri-playbook && ansible-playbook -i inventory -v site.yml --tags=iri_ssl,loadbalancer_role -e overwrite=yes
+        [[ $? -ne 0 ]] && MSG="Enabling HAProxy failed!!! Check output above for errors." || MSG="Installation finished successfully!"
+        pause "$MSG Press ENTER to return to menu."
+    fi
+}
+
+
+
+### Notice ###
+function how_to_setup() {
+    whiptail --title "IRIC v${__VERSION__} - Instructions" \
+             --msgbox "Check that you have the .nbctl file in your home folder (ls -l ~/.nbctl).\nExample of the file's contents:\n\napi_version: 1.4.2.4\nhost: http://127.0.0.1:14265\nfile: /etc/default/iri\n\nThis will allow this script to use the nbctl utility to manage neighbors and get the node's data." \
+             15 $WIDTH
+}
+
+
+### Neighbors ###
+function add_neighbors() {
+    local NEIGHBORS
+    local HEIGHT
+    local NBCTL_OUTPUT
+    local RC
+    local IRI_CONFIG
+
+    NEIGHBORS=$(whiptail --inputbox "Enter a list of neighbors separated by space:" 8 $WIDTH --title "Add Neighbors" 3>&1 1>&2 2>&3)
+    RC=$?
+    if [[ $RC -ne 0 ]]; then
+        return
+    fi
+
+    ADD_LIST=$(echo "$NEIGHBORS" | sed 's/  */ /g' | sed 's/ / -n /g' | sed 's/^\(.*\)/-n \1/')
+    if ! (echo "$ADD_LIST" | egrep -q "tcp"); then
+        whiptail --title "Invalid Input" \
+                 --msgbox "Invalid input provided. Please check the syntax you provided is valid." \
+                  8 $WIDTH
+        return
+    fi
+
+    HEIGHT=$(expr $(echo "$NEIGHBORS"|tr ' ' '\n'|wc -l) + 8)
+    NEIGHBORS_TO_ADD=$(echo "$NEIGHBORS"|tr ' ' '\n')
+    if (whiptail --title "Add Neighbors" \
+                 --yesno "The following neighbor(s) will be added:\n\n$NEIGHBORS_TO_ADD" \
+                 $HEIGHT $WIDTH) then
+
+        # Set iri config file if any configured
+        IRI_CONFIG=$(grep ^file /root/.nbctl | cut -d: -f2)
+        [ -n "$IRI_CONFIG" ] && IRI_CONFIG="-f $IRI_CONFIG"
+
+        # Run nbctl command
+        NBCTL_OUTPUT=$(nbctl -a $ADD_LIST $IRI_CONFIG 2>&1)
+        RC=$?
+        if [[ $RC -eq 0 ]]; then
+            HEIGHT=$(expr $(echo "$NBCTL_OUTPUT"|wc -l) + 7)
+            whiptail --title "Added Neighbors" \
+                     --msgbox "$NBCTL_OUTPUT" \
+                    $HEIGHT $WIDTH
+        else
+            if echo "$NBCTL_OUTPUT" | grep -q "urllib2.URLError" ; then
+               NBCTL_OUTPUT="Failed to communicate with IRI API port. Check if IRI is active and if $HOME/.nbctl is configured correctly."
+            fi
+            HEIGHT=$(expr $(echo "$NBCTL_OUTPUT"|wc -l) + 10)
+            whiptail --title "Adding Neighbors Failed" \
+                     --msgbox "Failure: $NBCTL_OUTPUT" \
+                     $HEIGHT $WIDTH
+        fi
+    fi
+}
+
+function remove_neighbors() {
+    local NEIGHBORS_ARRAY
+    local NEIGHBORS
+    local NEIGHBOR
+    local HEIGHT
+    local IRI_CONFIG
+
+    echo "Getting neighbors list..."
+    NEIGHBORS=$(list_neighbors get)
+    RC=$?
+    clear
+    if [[ $RC -ne 0 ]]; then
+        whiptail --title "Neighbors Failed" \
+                 --msgbox "Failed to get list of neighbors: $NEIGHBORS" \
+                 8 $WIDTH
+        return
+    fi
+    if [ "$NEIGHBORS" == "" ]; then
+        whiptail --title "No Neighbors" \
+                 --msgbox "There are no neighbors configured" \
+                 8 $WIDTH
+        return
+    fi
+    HEIGHT=$(expr $(echo "$NEIGHBORS"|wc -l) + 5)
+    NEIGHBORS_ARRAY=($(echo "$NEIGHBORS"))
+    NEIGHBORS_ARRAY_INDEXED=($(echo "$NEIGHBORS"| awk '!/^ / && NF { print NR")"; print $1}'))
+    NEIGHBOR_INDEX=$(whiptail --title "Remove neighbors" --menu "Choose a neighbor" 25 $WIDTH 16  "${NEIGHBORS_ARRAY_INDEXED[@]}" 3>&1 1>&2 2>&3)
+    if [ $? -eq 1 ]; then
+        return
+    fi
+
+    NEIGHBOR_INX=$(echo "$NEIGHBOR_INDEX" | cut -d')' -f1)
+    NEIGHBOR_INX=$(expr $NEIGHBOR_INX - 1)
+    TO_REMOVE="${NEIGHBORS_ARRAY[$NEIGHBOR_INX]}"
+    SCHEME=$(echo "$TO_REMOVE"|cut -d'/' -f2)
+    ADDRESS=$(echo "$TO_REMOVE"|cut -d'/' -f1)
+    if (whiptail --title "Confirm removal" \
+                 --yesno "Are you sure you want to remove: ${SCHEME}://${ADDRESS}" \
+                 --defaultno \
+                 8 $WIDTH)
+    then
+        IRI_CONFIG=$(grep ^file /root/.nbctl | cut -d: -f2)
+        [ -n "$IRI_CONFIG" ] && IRI_CONFIG="-f $IRI_CONFIG"
+        REMOVAL_OUTPUT=$(nbctl -r -n "${SCHEME}://${ADDRESS}" $IRI_CONFIG 2>&1)
+        if [ $? -eq 0 ];then
+            whiptail --title "Removed successfully" \
+                     --msgbox "$REMOVAL_OUTPUT" \
+                     12 $WIDTH
+        else
+            HEIGHT=$(expr $(echo "$REMOVAL_OUTPUT"|wc -l) + 7)
+            whiptail --title "Remove failed!" \
+                     --msgbox "${REMOVAL_OUTPUT}" \
+                     $HEIGHT $WIDTH
+        fi
+    fi
+}
+
+function list_neighbors() {
+    local NEIGHBORS_QUERY
+    local NEIGHBORS
+    local HEIGHT
+    local RETURN_RES=$1
+    NEIGHBORS_QUERY=$(nbctl -l 2>&1)
+    RC=$?
+    if [[ $RC -ne 0 ]]; then
+        if echo "$NEIGHBORS_QUERY" | egrep -q "urllib2.URLError|timeout|refused" ; then
+            NEIGHBORS_QUERY="Failed to communicate with IRI API port. Check if IRI is active and if $HOME/.nbctl is configured correctly."
+        else
+            NEIGHBORS_QUERY="Unknown error"
+        fi
+        if [ -n "$RETURN_RES" ]; then
+            echo "$NEIGHBORS_QUERY"
+            return 1
+        fi
+        HEIGHT=$(expr $(echo "$NEIGHBORS_QUERY"|wc -l) + 7)
+        whiptail --title "List neighbors failed" \
+                 --msgbox "$NEIGHBORS_QUERY" \
+                 $HEIGHT $WIDTH
+        return 1
+    else
+        NEIGHBORS=$( echo "$NEIGHBORS_QUERY" | jq -r '.neighbors[] | "\(.address)/\(.connectionType)"' )
+        if [ -n "$RETURN_RES" ]; then
+            echo "$NEIGHBORS"
+            return 0
+        fi
+
+        if [ "$NEIGHBORS" == "" ]; then
+            LENGTH=0
+        else
+            LENGTH=$(echo "$NEIGHBORS"|wc -l)
+        fi
+        local HEIGHT=$(expr $LENGTH + 8)
+        whiptail --title "List Neighbors" \
+                 --msgbox "Total: ${LENGTH} neighbor(s)\n\n${NEIGHBORS}" \
+                 $HEIGHT $WIDTH
+    fi
+}
+
+### Get DB ###
+function get_db() {
+    # Playbook's default source
+    XVPS_SOURCE="https://x-vps.com/iota.db.tgz"
+
+    # Create array of available DB resources
+    SOURCES_ARRAY=("$XVPS_SOURCE" "Custom")
+
+    # Create an indexed array for building the menu
+    SOURCES_ARRAY_INDEXED=($(printf "%s\n" "${SOURCES_ARRAY[@]}"| awk -F, '!/^ / && NF { print NR")"; print $1}'))
+
+    # Output the menu
+    SOURCE_INDEX=$(whiptail --title "Select DB Source" --menu "This action will download and boostrap snapshot state DB.\nChoose a source where to download the database from:" 16 $WIDTH 4 "${SOURCES_ARRAY_INDEXED[@]}" 3>&1 1>&2 2>&3)
+    if [ $? -eq 1 ]; then
+        return
+    fi
+
+    # Parse to get the correct database source
+    local CHOSEN_INDEX=$(( $(echo "$SOURCE_INDEX"| sed 's/)//') - 1 ))
+    local DB_SOURCE="${SOURCES_ARRAY[$CHOSEN_INDEX]}"
+
+    # Try to get database size. If source is custom, ask to enter URL.
+    local FILE_SIZE
+    local LAST_UPDATED="unknown"
+    if [ "$DB_SOURCE" == "$XVPS_SOURCE" ]; then
+        local JSON_OUTPUT=$(curl -k -H "Content-Type: application/json" -m 4 -f -s https://x-vps.com/index.php 2>/dev/null)
+        FILE_SIZE=$(echo "$JSON_OUTPUT" | jq -r .file_size)
+        LAST_UPDATED=$(echo "$JSON_OUTPUT" | jq -r .last_updated)
+    elif [ "$DB_SOURCE" == "Custom" ]; then
+        DB_SOURCE=$(whiptail --inputbox "Choose a source where to download the database from:" 8 $WIDTH "" --title "Select Custom Database Source" 3>&1 1>&2 2>&3)
+        if [ $? -eq 1 ]; then
+            return
+        fi
+    fi
+
+    if [[ -z "${DB_SOURCE// }" ]] || [[ "x${DB_SOURCE}" == "x" ]]
+    then
+        whiptail --title "Empty source!" \
+                 --msgbox "You didn't supply any source!" \
+                 8 $WIDTH
+        return
+    fi
+
+    # Try to get the file size before download
+    [ -z "$FILE_SIZE" ] && { FILE_SIZE=$(wget --spider "$DB_SOURCE" 2>&1 | grep "^Length: " | sed 's/^.* (\(.*\)) .*$/\1/'); }
+    [ -z "$FILE_SIZE" ] && FILE_SIZE="unknown"
+
+    if (whiptail --title "Confirm DB Download" \
+                 --yesno "Download new database from '$DB_SOURCE'?\n\nUpdated: ${LAST_UPDATED}, size: ${FILE_SIZE}\n\n(TIP: for long running tasks consider running iric in a screen session)" \
+                 16 $WIDTH) then
+        # This command will stop iri, remove older database directories,
+        # extract the database (on the fly) set correct user ownership and start IRI up again.
+        echo "Stopping iri first, removing old database files and commencing download/extract of database files ..."
+        systemctl stop iri && rm -rf /var/lib/iri/target/{mainnetdb*,mainnet.snapshot*,spent-addresses-*} && mkdir -p /var/lib/iri/target && cd /var/lib/iri/target/ && wget -O - "$DB_SOURCE" | tar zxv && chown iri.iri /var/lib/iri -RL && systemctl start iri
+        if [[ $? -ne 0 ]]; then
+            whiptail --title "New DB Failed!" \
+                     --msgbox "Well this is embarrassing. Downloading the new DB failed..." \
+                     8 $WIDTH
+            # Cleanup any leftovers
+            rm -rf /var/lib/iri/target/mainnetdb*
+            clear
+            return 1
+        else
+            pause "Done! Please check IRI's status and logs to verify it is error free."
+            clear
+        fi
+    fi
+}
+
+### Recover DB ###
+function recover_db() {
+    if (whiptail --title "Confirm DB Recovery" \
+                 --yesno "Recover database from backup DB in iri_backup task." \
+                 16 $WIDTH) then
+        # This command will stop iri, remove older database directories,
+        # extract the database (on the fly) set correct user ownership and start IRI up again.
+        echo "Stopping iri first, removing old database files and commencing recovery of database files ..."
+        systemctl stop iri
+        rm -rf /var/lib/iri/target/{mainnetdb*,mainnet.snapshot*,spent-addresses-*}
+        mkdir -p /var/lib/iri/target
+        cd /var/lib/iri/target/
+        cp -rf backup mainnetdb
+        chown iri.iri /var/lib/iri -RL
+        systemctl start iri
+        if [[ $? -ne 0 ]]; then
+            whiptail --title "New DB Failed!" \
+                     --msgbox "Well this is embarrassing. Recovering the new DB failed..." \
+                     8 $WIDTH
+            # Cleanup any leftovers
+            rm -rf /var/lib/iri/target/mainnetdb*
+            clear
+            return 1
+        else
+            pause "Done! Please check IRI's status and logs to verify it is error free."
+            clear
+        fi
+    fi
+}
+
+## IRIC
+function get_latest_iric_version() {
+    local RAND=$(echo -n $(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 7 | head -n 1))
+    curl -s -f -m 5 -H 'Cache-Control: no-cache' "https://raw.githubusercontent.com/DLTcollab/iri-playbook/master/roles/iri/files/iric?nocache=$RAND"|grep ^VERSION|cut -d= -f2
+}
+
+function check_new_iric() {
+    local CURR_VERSION="$__VERSION__"
+    local IRIC_VERSION=$(get_latest_iric_version 2>&1)
+    if [[ $? -ne 0 ]] || [[ "$IRIC_VERSION" == "" ]]; then
+        return 1
+    fi
+
+    if compare_versions $CURR_VERSION '>=' $IRIC_VERSION; then
+        return 1
+    else
+        return 0
+    fi
+}
+
+function update_iric() {
+    local IRIC_VERSION=$(get_latest_iric_version 2>&1)
+    local CURR_VERSION="$__VERSION__"
+    if [[ $? -ne 0 ]] || [[ "$IRIC_VERSION" == "" ]]; then
+        whiptail --title "IRIC Update Failed" \
+                 --msgbox "Failed to get IRIC version from github." \
+                 8 $WIDTH
+        return 1
+    fi
+
+    if compare_versions $CURR_VERSION '>=' $IRIC_VERSION; then
+        if ! (whiptail --title "No Updates" \
+                     --yesno "You already have the latest version: ${CURR_VERSION}.\nDo you want to proceed anyway?" \
+                     --defaultno \
+                     10 $WIDTH) then
+            return
+        else
+            local NO_CONFIRM=1
+        fi
+    fi
+
+    if [ -z "$NO_CONFIRM" ]; then
+        if ! (whiptail --title "Confirm Update" \
+                     --yesno "Are you sure you want to update IRIC from '$__VERSION__' to '$IRIC_VERSION'?" \
+                     8 $WIDTH) then
+            return
+        fi
+    fi
+
+    verify_playbook
+    if [[ $? -ne 0 ]]; then
+         whiptail --title "Error!" \
+                  --msgbox "ERROR: playbook task failed." \
+                  8 $WIDTH
+         return 1
+    fi
+    cd /opt/iri-playbook && ansible-playbook -i inventory site.yml -v --tags=scripts,nbctl_config
+    [[ $? -ne 0 ]] && MSG="Updating IRIC failed!!! Check output above for errors." || MSG="Update finished successfully!"
+    pause "$MSG Press ENTER to return to menu."
+    clear
+
+    # Remove current pid file and restart
+    rm -f $PID_FILE
+    exec "$0"
+}
+
+### Configs ###
+function choose_editor() {
+    USER_CHOICE=$(whiptail --inputbox "Choose a default text editor:" 8 $WIDTH ${EDITOR} --title "Choose Editor" 3>&1 1>&2 2>&3)
+    if [[ $? -ne 0 ]]; then
+        return
+    fi
+
+    which $USER_CHOICE >/dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        whiptail --title "Error!" \
+                 --msgbox "ERROR: Invalid editor or editor not found on system." \
+                 8 $WIDTH
+        return 1
+    fi
+
+    EDITOR=$USER_CHOICE
+    if ! grep -q "^export EDITOR" $HOME/.iric; then
+        echo "export EDITOR=${EDITOR}" >> $HOME/.iric
+    else
+        sed -i "s/^export EDITOR=.*/export EDITOR=${EDITOR}/g" $HOME/.iric
+    fi
+}
+
+function edit_config_file() {
+    local CONFIG=$1
+    local SERVICE=$2
+    local RELOAD=$3
+
+    BEFORE_EDIT=$(md5sum $CONFIG | awk {'print $1'})
+    $EDITOR ${CONFIG}
+    AFTER_EDIT=$(md5sum $CONFIG | awk {'print $1'})
+
+    if [[ "$AFTER_EDIT" != "$BEFORE_EDIT" ]]; then
+        if (whiptail --title "File Modified" \
+                     --yesno "${CONFIG} file was modified.\n${SERVICE} requires a restart to pick up the new changes.\nDo you want to restart it now?" \
+                     8 $WIDTH) then
+            if [[ -z ${RELOAD} ]]; then
+                service_cmd $SERVICE restart
+            else
+                service_cmd $SERVICE reload
+            fi
+        fi
+    fi
+}
+
+function edit_config() {
+    local CONFIG_FILE=$1
+    local SERVICE=$2
+    local RELOAD=$3
+    if [ ! -f $CONFIG_FILE ]; then
+        whiptail --title "Missing File" \
+                 --msgbox "Error: cannot find '$CONFIG_FILE'" \
+                 8 $WIDTH
+        return 1
+    fi
+
+    # Make backup for restores
+    if [ ! -f ${CONFIG_FILE}.original ]; then
+        cp ${CONFIG_FILE} ${CONFIG_FILE}.original
+    fi
+
+    if edit_config_file ${CONFIG_FILE} ${SERVICE} ${RELOAD}; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+### Node info ###
+function show_lmsi() {
+    if [ ! -f $HOME/.nbctl ]; then
+        whiptail --title "Missing .nbctl" \
+                 --msgbox "Error: cannot find $HOME/.nbctl" \
+                 8 $WIDTH
+        return
+    fi
+    IRI_HOST=$(grep ^host $HOME/.nbctl | cut -d: -f2-)
+    local IRI_API_VERSION=$(grep ^api_version $HOME/.nbctl | cut -d: -f2-)
+    local LSMI_LOCAL=$(curl -f -m 5 -s $IRI_HOST -X POST -H "X-IOTA-API-Version: $IRI_API_VERSION" -H 'Content-Type: application/json' -d '{"command": "getNodeInfo"}'| python -m json.tool|egrep "latestSolidSubtangleMilestoneIndex|latestMilestoneIndex"| sed 's/,//'|sed -e 's/^[ \t]*//'|sed 's/"//g')
+    if [ $? -ne 0 ]; then
+        whiptail --title "Query failed" \
+                 --msgbox "Error: failed query ${LSMI_LOCAL}. Check if IRI is active and if $HOME/.nbctl is configured properly." \
+                 12 $WIDTH
+        return
+    fi
+
+    local LSMI_QUERY=$(curl -H 'Cache-Control: no-cache' -s -f -m 5 https://x-vps.com/lmsi|jq -r .latestMilestoneIndex 2>/dev/null)
+    if [ $? -eq 0 ]; then
+        OUTPUT="Latest milestone index: ${LSMI_QUERY}\n\n"
+    else
+        OUTPUT=""
+    fi
+    OUTPUT="${OUTPUT}Local:\n\n${LSMI_LOCAL}"
+    whiptail --title "LatestMilestoneIndex" \
+             --msgbox "$OUTPUT" \
+             12 $WIDTH
+}
+
+function get_node_info() {
+    if [ ! -f $HOME/.nbctl ]; then
+        whiptail --title "Missing .nbctl" \
+                 --msgbox "Error: cannot find $HOME/.nbctl" \
+                 8 $WIDTH
+        return
+    fi
+    local IRI_HOST=$(grep ^host $HOME/.nbctl | cut -d: -f2-)
+    local IRI_API_VERSION=$(grep ^api_version $HOME/.nbctl | cut -d: -f2-)
+    NODE_INFO=$(curl -f -m 5 -s $IRI_HOST -X POST -H "X-IOTA-API-Version: $IRI_API_VERSION" -H 'Content-Type: application/json' -d '{"command": "getNodeInfo"}'| jq -r 'to_entries[] | "\(.key): \(.value )"' | column -t | sort)
+    if [ $? -ne 0 ]; then
+        whiptail --title "Query failed" \
+                 --msgbox "Error: failed query ${NODE_INFO}. Check if IRI is active and if $HOME/.nbctl is configured properly." \
+                 12 $WIDTH
+        return
+    fi
+
+    HEIGHT=$(expr $(echo "$NODE_INFO"|wc -l) + 13)
+    whiptail --title "Node Info" \
+             --msgbox "$NODE_INFO" \
+             $HEIGHT $WIDTH
+}
+
+### Services ###
+function service_status() {
+    local SERVICE
+    SERVICE=$1
+    # Pipe to less as some distros don't use pager
+    systemctl status $SERVICE|less
+}
+
+function service_cmd() {
+    local SERVICE
+    local COMMAND
+    local OUTPUT
+    local EXTRA_CMD
+    local DISABLE
+    local STATE
+    SERVICE=$1
+    COMMAND=$2
+    EXTRA_CMD=$3
+
+    echo "Running 'systemctl $COMMAND $SERVICE' ..."
+    if [ "$EXTRA_CMD" == "disable" ]; then
+        systemctl disable $SERVICE
+        STATE="and disable"
+    elif [ "$EXTRA_CMD" == "enable" ]; then
+        systemctl enable $SERVICE
+        STATE="enabled"
+    fi
+
+    if [ "$EXTRA_CMD" != "enable" ]; then
+        OUTPUT=$(systemctl $COMMAND $SERVICE 2>&1)
+    else
+        OUTPUT=""
+    fi
+    HEIGHT=$(expr $(echo "$OUTPUT"|wc -l) + 7)
+    if [ $? -ne 0 ]; then
+        whiptail --title "Failed" \
+                 --msgbox "$COMMAND $SERVICE failed: $OUTPUT" \
+                 $HEIGHT 48
+    else
+        whiptail --title "Success" \
+                 --msgbox "$COMMAND $SERVICE $STATE OK" \
+                 $HEIGHT 48
+    fi
+    clear
+}
+
+function service_log() {
+    local SERVICE
+    local ARGS
+    SERVICE=$1
+    # Pipe to less in the case too few lines.
+    # This will prevent immediately exiting the view
+    journalctl -u $SERVICE|less
+}
+
+function service_menu() {
+    local SERVICE
+    SERVICE=$1
+    whiptail --title "IRIC v${__VERSION__} - $SERVICE Service" \
+             --menu "For logs use SHIFT-g to skip to end of log, or q to exit." \
+             --cancel-button "Back" \
+             25 $WIDTH 16 \
+    "a)" "Status" \
+    "b)" "Start" \
+    "c)" "Stop" \
+    "d)" "Restart" \
+    "e)" "Disable start on reboot" \
+    "f)" "Enable start on reboot" \
+    "g)" "View log" \
+    3>&1 1>&2 2>&3
+}
+
+function service() {
+    local SERVICE
+    local CHOICE
+    SERVICE=$1
+    CHOICE=$(service_menu $SERVICE)
+    RC=$?
+    if [[ $RC -eq 1 ]]; then
+        return
+    fi
+    case "$CHOICE" in
+
+        "a)")
+            service_status $SERVICE
+            service $SERVICE
+            ;;
+
+        "b)")
+            service_cmd $SERVICE start
+            service $SERVICE
+            ;;
+
+        "c)")
+            service_cmd $SERVICE stop
+            service $SERVICE
+            ;;
+
+        "d)")
+            service_cmd $SERVICE restart
+            service $SERVICE
+            ;;
+
+        "e)")
+            service_cmd $SERVICE stop disable
+            service $SERVICE
+            ;;
+
+        "f)")
+            service_cmd $SERVICE "" enable
+            service $SERVICE
+            ;;
+
+        "g)")
+            service_log $SERVICE
+            service $SERVICE
+            ;;
+
+        *)
+            service $SERVICE
+            ;;
+    esac
+}
+
+function services_menu() {
+    whiptail --title "IRIC v${__VERSION__} - Node Services" \
+             --menu "Choose an option" \
+             --cancel-button "Back" \
+             25 $WIDTH 16 \
+    "a)" "IRI" \
+    "b)" "IOTA Peer Manager" \
+    "c)" "Prometheus" \
+    "d)" "Alert Manager" \
+    "e)" "Grafana" \
+    "f)" "IOTA Prometheus Exporter" \
+    "g)" "Nginx" \
+    "h)" "HAProxy" \
+    "i)" "Node Exporter" \
+    3>&1 1>&2 2>&3
+}
+
+function services() {
+    local CHOICE
+    CHOICE=$(services_menu)
+    RC=$?
+    if [[ $RC -eq 1 ]]; then
+        return
+    fi
+    case "$CHOICE" in
+
+        "a)")
+            service iri
+            services
+            ;;
+
+        "b)")
+            service iota-pm
+            services
+            ;;
+
+        "c)")
+            service prometheus
+            services
+            ;;
+
+        "d)")
+            service alertmanager
+            services
+            ;;
+
+        "e)")
+            service grafana-server
+            services
+            ;;
+
+        "f)")
+            service iota-prom-exporter
+            services
+            ;;
+
+        "g)")
+            service nginx
+            services
+            ;;
+
+        "h)")
+            service haproxy
+            services
+            ;;
+
+        "i)")
+           service node-exporter
+           services
+           ;;
+
+        *)
+           services
+           ;;
+    esac
+}
+
+### Configure files ###
+function configure_files_menu() {
+    whiptail --title "IRIC v${__VERSION__} - Configure Files" \
+             --menu "Choose an option" \
+             --cancel-button "Back" \
+              22 48 12 \
+    "a)" "IRI System Config" \
+    "b)" "IRI INI Config" \
+    "c)" "IOTA Prometheus Exporter Config" \
+    "d)" "AlertManager Config" \
+    "e)" "Prometheus Config" \
+    "f)" "Prometheus Alerts" \
+    "g)" "HAProxy Config" \
+    "Z)" "Choose Editor" \
+    3>&1 1>&2 2>&3
+}
+
+function configure_files() {
+    local CHOICE
+    CHOICE=$(configure_files_menu)
+    RC=$?
+    if [[ $RC -eq 1 ]]; then
+        return
+    fi
+
+    case "$CHOICE" in
+        "a)")
+            local IRI_CONFIG=$(grep ^file /root/.nbctl | cut -d: -f2 | sed 's/ //g')
+            if [[ $? -ne 0 ]] || [ -z "$IRI_CONFIG" ]; then
+                whiptail --title "Missing .nbctl data" \
+                         --msgbox "Error: cannot find file value in $HOME/.nbctl" \
+                         8 $WIDTH
+                return 1
+            fi
+            edit_config "$IRI_CONFIG" "iri"
+            configure_files
+            ;;
+
+        "b)")
+            edit_config "/var/lib/iri/iri.ini" "iri"
+            configure_files
+            ;;
+
+        "c)")
+            edit_config "/opt/prometheus/iota-prom-exporter/config.js" "iota-prom-exporter"
+            configure_files
+            ;;
+
+        "d)")
+            edit_config "/opt/prometheus/alertmanager/config.yml" "alertmanager"
+            configure_files
+            ;;
+
+        "e)")
+            edit_config "/etc/prometheus/prometheus.yaml" "prometheus"
+            configure_files
+            ;;
+
+        "f)")
+            edit_config "/etc/prometheus/alert.rules.yml" "prometheus"
+            configure_files
+            ;;
+
+        "g)")
+            edit_config "/etc/haproxy/haproxy.cfg" "haproxy" "reload"
+            configure_files
+            ;;
+
+        "Z)")
+            choose_editor
+            configure_files
+            ;;
+
+        *)
+            configure_files
+            ;;
+    esac
+
+}
+
+### Neighbors ###
+function neighbors_menu(){
+    whiptail --title "IRIC v${__VERSION__} - Neighbors" \
+             --menu "Choose an option" \
+             --cancel-button "Back" \
+              12 48 4 \
+    "a)" "Add Neighbors" \
+    "b)" "Remove neighbors" \
+    "c)" "List neighbors" \
+    3>&1 1>&2 2>&3
+}
+
+function neighbors(){
+    local CHOICE
+    CHOICE=$(neighbors_menu)
+    RC=$?
+    if [[ $RC -eq 1 ]]; then
+        return
+    fi
+
+    case "$CHOICE" in
+        "a)")
+            add_neighbors
+            neighbors
+            ;;
+
+        "b)")
+            remove_neighbors
+            neighbors
+            ;;
+
+        "c)")
+            list_neighbors
+            neighbors
+            ;;
+
+        *)
+            neighbors
+            ;;
+    esac
+}
+
+function main_menu() {
+    local MENU="Choose an option"
+    if check_new_iric; then
+        MENU="${MENU}\n(*IRIC update available)"
+    fi
+
+    whiptail --title "IRIC v${__VERSION__} - IRI Configuration Menu" \
+             --menu "$MENU" \
+             --cancel-button "Exit" \
+              32 $WIDTH 22 \
+    "a)" "Update IRI software" \
+    "b)" "Update Monitoring" \
+    "c)" "Enable HAProxy" \
+    "d)" "Update HAProxy" \
+    "e)" "Neighbors" \
+    "f)" "Show LatestMilestoneIndex" \
+    "g)" "Get Node Info" \
+    "h)" "Manage Services" \
+    "i)" "Get Fully Synced DB" \
+    "j)" "Recover DB from backup" \
+    "k)" "Configure Files" \
+    "l)" "Enable HTTPS / Certificate" \
+    "m)" "Update IRIC and node scripts" \
+    "Z)" "Configure this Script" \
+    3>&1 1>&2 2>&3
+}
+
+function run_main_menu() {
+    local CHOICE
+    CHOICE=$(main_menu)
+    RC=$?
+    if [[ $RC -eq 1 ]]; then
+        exit
+    fi
+
+    case "$CHOICE" in
+        "Z)")
+            how_to_setup
+            run_main_menu
+            ;;
+
+        "a)")
+            upgrade_iri
+            run_main_menu
+            ;;
+
+        "b)")
+            upgrade_monitoring
+            run_main_menu
+            ;;
+
+        "c)")
+            enable_haproxy
+            run_main_menu
+            ;;
+
+        "d)")
+            enable_haproxy "This will update haproxy and the haproxy.cfg file to the latest version. Continue?"
+            run_main_menu
+            ;;
+
+        "e)")
+            neighbors
+            run_main_menu
+            ;;
+
+        "f)")
+            show_lmsi
+            run_main_menu
+            ;;
+
+        "g)")
+            get_node_info
+            run_main_menu
+            ;;
+
+        "h)")
+            services
+            run_main_menu
+            ;;
+
+        "i)")
+            get_db
+            run_main_menu
+            ;;
+
+        "j)")
+            recover_db
+            run_main_menu
+            ;;
+
+        "k)")
+            configure_files
+            run_main_menu
+            ;;
+
+        "l)")
+            enable_https
+            run_main_menu
+	        ;;
+
+        "m)")
+            update_iric
+            run_main_menu
+            ;;
+
+        *)
+            run_main_menu
+            ;;
+    esac
+}
+
+# Get OS and version
+set_dist
+
+# Run main menu
+run_main_menu

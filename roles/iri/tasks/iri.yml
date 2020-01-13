@@ -1,0 +1,172 @@
+- name: set iri variables
+  set_fact:
+    iri_workdir: "{{ iri_basedir }}/target"
+  tags: always
+
+- name: set variables centos/redhat
+  set_fact:
+    systemd_dir: /usr/lib/systemd/system
+    config_dir: /etc/sysconfig
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+  tags: always
+
+- name: set variables debian/ubuntu
+  set_fact:
+    systemd_dir: /etc/systemd/system
+    config_dir: /etc/default
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  tags: always
+
+- name: auto memory settings block
+  block:
+
+    - name: set memory limit factor for memory larger than 10240m
+      set_fact:
+        iri_java_mem: 8192m
+        iri_init_java_mem: 2048m
+        iri_java_heap_mem: 2048m
+      when: ansible_memtotal_mb|int > 10240
+
+    - name: set memory limit for java-iri for RAM up to 10240m
+      set_fact:
+        iri_java_mem: "{{ (ansible_memtotal_mb|int * 0.7)|round|int }}m"
+        iri_init_java_mem: "{{ (ansible_memtotal_mb|int * 0.2)|round|int }}m"
+        iri_java_heap_mem: "{{ (ansible_memtotal_mb|int * 0.2)|round|int }}m"
+      when: ansible_memtotal_mb|int <= 10240
+
+  when: memory_autoset is defined and memory_autoset|bool
+  tags:
+    - mem_override
+
+- name: add user to run iri as
+  user:
+    name: "{{ iri_username }}"
+    shell: /sbin/nologin
+    createhome: no
+    home: "{{ iri_basedir }}"
+  tags:
+    - iri_user
+
+- name: remove workdir
+  file:
+    path: "{{ iri_workdir }}"
+    state: absent
+  when: remove_iri_workdir is defined and remove_iri_workdir
+
+- name: ensure iri basedir ownership and permissions
+  file:
+    path: "{{ iri_basedir }}"
+    state: directory
+    mode: 0700
+    owner: "{{ iri_username }}"
+    group: "{{ iri_username }}"
+
+- name: ensure iri workdir ownership and permissions
+  file:
+    path: "{{ iri_workdir }}"
+    state: directory
+    mode: 0700
+    owner: "{{ iri_username }}"
+    group: "{{ iri_username }}"
+
+- name: "Downloading iri jar from github. This can take a while ..."
+  get_url:
+    url: "{{ iri_download_url }}"
+    dest: "{{ iri_workdir }}/{{ iri_jar_file }}"
+    owner: root
+    group: "{{ iri_username }}"
+    mode: 0640
+    timeout: 20
+  register: iri_downloaded
+  notify:
+    - restart iri
+
+- name: install scripts
+  block:
+
+    - set_fact:
+        system_settings_locale: "{{ add_locale | default('en_US.UTF-8') }}"
+      tags: gen_locale
+
+    - name: generate required locale Ubuntu/Debian
+      locale_gen:
+        name: "{{ system_settings_locale }}"
+        state: present
+      ignore_errors: yes
+      tags: gen_locale
+      when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+    - name: check if locale exists
+      shell: "/usr/bin/locale -a | grep -i {{ system_settings_locale | regex_replace('-', '') | quote }}"
+      register: found_locale
+      changed_when: no
+      failed_when: no
+      tags: gen_locale
+      when: ansible_distribution == 'CentOS'
+
+    - name: create locale
+      command: "localedef -i {{ system_settings_locale | regex_replace('(.*)\\..*', '\\1') | quote }} -f {{ system_settings_locale | regex_replace('.*\\.(.*)', '\\1') | quote }} {{ system_settings_locale | quote }}"
+      ignore_errors: yes
+      tags: gen_locale
+      when:
+        - ansible_distribution == 'CentOS'
+        - found_locale.rc != 0
+
+    - name: copy utility scripts
+      copy:
+        src: "files/{{ item }}"
+        dest: "/usr/bin/{{ item }}"
+        mode: 0755
+      with_items:
+        - nbctl
+        - reattach
+        - iric
+        - iribackup
+
+  tags:
+    - scripts
+
+- name: config default ~/.nbctl
+  copy:
+    dest: "{{ ansible_env.HOME }}/.nbctl"
+    content: "api_version: {{ iri_version }}\nhost: http://127.0.0.1:{{ iri_api_port }}\nfile: {{ config_dir }}/iri\n"
+    force: "{{ overwrite | default('no') }}"
+    backup: yes
+  tags:
+    - nbctl_config
+
+- name: copy iri systemd file
+  template:
+    src: templates/iri.service.j2
+    dest: "{{ systemd_dir }}/iri.service"
+  tags:
+    - iri_service_file
+  notify:
+    - restart iri
+
+- name: flush handlers
+  meta: flush_handlers
+
+- name: copy iri config file
+  template:
+    src: templates/iri.ini.j2
+    dest: "{{ iri_basedir }}/iri.ini"
+    force: "{{ overwrite | default('no') }}"
+    backup: yes
+  notify:
+    - restart iri
+
+- name: copy iri environment file
+  template:
+    src: templates/iri.sysconfig.j2
+    dest: "{{ config_dir }}/iri"
+    force: "{{ overwrite | default('no') }}"
+    backup: yes
+  notify:
+    - restart iri
+
+- name: ensure iri started and enabled
+  systemd:
+    name: iri.service
+    state: started
+    enabled: true

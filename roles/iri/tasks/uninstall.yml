@@ -1,0 +1,61 @@
+- name: set variables centos/redhat
+  set_fact:
+    systemd_dir: /usr/lib/systemd/system
+    config_dir: /etc/sysconfig
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+
+- name: set variables debian/ubuntu
+  set_fact:
+    systemd_dir: /etc/systemd/system
+    config_dir: /etc/default
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+- name: ensure iri stopped
+  systemd:
+    name: iri.service
+    state: stopped
+    enabled: false
+  ignore_errors: yes
+
+- name: remove iri service file
+  file:
+    path: "{{ systemd_dir }}/iri.service"
+    state: absent
+  notify:
+    - reload systemd
+
+- name: remove iribackup timer file
+  file:
+    path: "{{ systemd_dir }}/iribackup.timer"
+    state: absent
+  notify:
+    - reload systemd
+
+- name: remove iribackup service file
+  file:
+    path: "{{ systemd_dir }}/iribackup.service"
+    state: absent
+  notify:
+    - reload systemd
+
+- name: remove iri config and utility files
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items:
+    - "{{ ansible_env.HOME }}/.nbctl"
+    - "{{ iri_basedir }}"
+    - "/usr/bin/nbctl"
+    - "/usr/bin/reattach"
+    - "/usr/bin/iric"
+    - "/usr/bin/iribackup"
+    - "{{ config_dir }}/iri"
+    - "{{ ssl_key_file }}"
+    - "{{ ssl_cert_file }}"
+    - "{{ ssl_certkey_file}}"
+
+- name: remove the user for iri
+  user:
+    name: "{{ iri_username }}"
+    state: absent
+    remove: yes

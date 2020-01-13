@@ -1,0 +1,21 @@
+#!/bin/bash
+
+# Health check for IOTA nodes
+NodeInfo=`curl -s http://localhost:14265 \
+        -X POST \
+        -H 'Content-Type: application/json' \
+        -H 'X-IOTA-API-VERSION: 1' \
+        -d '{"command": "getNodeInfo"}'`
+
+latestMilestoneIndex=`echo $NodeInfo | jq '.latestMilestoneIndex'`
+latestSolidSubtangleMilestoneIndex=`echo $NodeInfo | jq '.latestSolidSubtangleMilestoneIndex'`
+
+diff_syncing=`expr $latestMilestoneIndex - $latestSolidSubtangleMilestoneIndex`
+
+if [ "$diff_syncing" != 0 ]
+then
+        exit
+fi
+
+# Backup iri database
+rsync -av /var/lib/iri/target/mainnetdb /var/lib/iri/target/backup

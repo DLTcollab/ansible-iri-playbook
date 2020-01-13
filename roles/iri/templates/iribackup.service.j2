@@ -1,0 +1,14 @@
+[Unit]
+Description=IOTA DB backup
+After=network-online.target
+ 
+[Service]
+WorkingDirectory={{ iri_workdir }}
+ExecStart= /usr/bin/iribackup
+Type=simple
+User={{ iri_username }}
+Group={{ iri_username }}
+SyslogLevel=debug
+
+[Install]
+WantedBy=multi-user.target

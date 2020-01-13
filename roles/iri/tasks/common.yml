@@ -1,0 +1,49 @@
+- name: stop if no systemd support
+  assert:
+    that: ansible_service_mgr == "systemd"
+  tags:
+    - always
+    - check_service_mgr
+  ignore_errors: "{{ ignore_assert_errors }}"
+
+- name: stop if unknown distribution
+  assert:
+    that: ansible_distribution in supported_distributions
+  tags:
+    - always
+    - check_dist
+  ignore_errors: "{{ ignore_assert_errors }}"
+
+- name: stop if memory is too small
+  assert:
+    that: ansible_memtotal_mb >= min_required_memtotal_mb
+  ignore_errors: "{{ ignore_assert_errors }}"
+  tags:
+    - always
+    - check_memory
+
+- name: set offical download URL
+  block:
+    - set_fact:
+        iri_download_tag: "v{{ iri_version }}{{ '-RELEASE' if iri_version is version_compare('1.5.6', '>=') else '' }}"
+        iri_download_file: "iri-{{ iri_version }}{{ '-RELEASE' if iri_version is version_compare('1.5.6', '>=') else '' }}.jar"
+
+    - set_fact:
+        iri_download_url: "https://github.com/iotaledger/iri/releases/download/{{ iri_download_tag }}/{{ iri_download_file }}"
+
+  when: iri_version_official is defined and iri_version_official|bool == True
+
+- name: set community download URL
+  block:
+    - set_fact:
+        iri_download_tag: "v{{ iri_version }}{{ '-COACH' if iri_version is version_compare('1.5.6', '>=') else '' }}"
+        iri_download_file: "iri-{{ iri_version }}{{ '-COACH' if iri_version is version_compare('1.5.6', '>=') else '' }}{{ '-REMOTE' if iri_version_remote else '' }}.jar"
+
+    - set_fact:
+        iri_download_url: "https://github.com/DLTcollab/iri/releases/download/{{ iri_download_tag }}/{{ iri_download_file }}"
+
+  when: iri_version_official is defined and iri_version_official|bool == False
+
+- name: set jar file name
+  set_fact:
+    iri_jar_file: "{{ iri_download_file }}"

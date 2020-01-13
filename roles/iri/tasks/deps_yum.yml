@@ -1,0 +1,29 @@
+- name: Install epel-release
+  yum:
+    state: latest
+    name: epel-release
+
+- name: Install some packages
+  yum:
+    name: "{{ packages }}"
+  vars:
+    packages:
+      - policycoreutils-python
+      - libappindicator
+      - curl
+      - wget
+      - lsof
+      - jq
+      - pv
+      - nano
+      - sysstat
+      - atop
+      - htop
+      - fpaste
+      - openssl
+      - util-linux
+      - python-pip
+      - java-1.8.0-openjdk
+  tags:
+    - scripts
+    - deps

@@ -1,0 +1,28 @@
+- import_tasks: common.yml
+  tags:
+    - iri_common
+
+- import_tasks: deps_apt.yml
+  tags:
+    - iri_deps_apt
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+
+- import_tasks: deps_yum.yml
+  tags:
+    - iri_deps_yum
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+
+- import_tasks: iri.yml
+  tags:
+    - iri_config
+
+- import_tasks: backup.yml
+  tags:
+    - iri_backup
+  when: backup is defined and backup|bool == True
+
+- import_tasks: uninstall.yml
+  tags:
+    - uninstall
+    - uninstall_iri
+  when: uninstall_playbook is defined and uninstall_playbook|bool == True

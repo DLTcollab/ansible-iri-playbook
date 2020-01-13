@@ -1,0 +1,15 @@
+- name: copy iribackup timer file
+  template:
+    src: templates/iribackup.service.j2
+    dest: "{{ systemd_dir }}/iribackup.service"
+
+- name: copy iribackup timer file
+  template:
+    src: templates/iribackup.timer.j2
+    dest: "{{ systemd_dir }}/iribackup.timer"
+
+- name: ensure iribackup started and enabled
+  systemd:
+    name: iribackup.timer
+    state: started
+    enabled: true

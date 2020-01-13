@@ -1,0 +1,38 @@
+IRI_VERSION={{ iri_version }}
+
+IRI_JAR_FILE={{ iri_jar_file }}
+
+# Port used for API calls (and/or lightwallet connection)
+IRI_API_PORT={{ iri_api_port }}
+
+# TCP neighboring port listens on this address on the node.
+# The value 0.0.0.0 means "all interfaces".
+NEIGHBORING_SOCKET_ADDRESS={{ iri_tcp_port_bind_address }}
+
+# TCP neighbor peering port
+NEIGHBORING_SOCKET_PORT={{ iri_tcp_port }}
+
+# Java max mem usage for iri
+JAVA_MEM={{ iri_java_mem }}
+
+# Java initial mem usage
+JAVA_INIT_MEM={{ iri_init_java_mem }}
+
+# Java heap mem
+JAVA_HEAP_MEM={{ iri_java_heap_mem }}
+
+# Limit commands to API
+REMOTE_LIMIT_API="{{ iri_remote_limit_api }}"
+
+# Optional OPTIONS can contain multiple values e.g.
+#OPTIONS="--remote true --testnet true"
+OPTIONS="{% if api_port_remote is defined and api_port_remote %}--remote true{% endif %} {% if iri_version_remote is defined and iri_version_remote %}--pearldiver-exlib dcurl{% endif %}"
+
+# IRI Configuration file. Basically, most options can either
+# be provided as commandline arguments to iri or via this file.
+# We make use of this file for additional options, e.g. REMOTE_AUTH etc.
+IRI_CONFIG_FILE={{ iri_basedir }}/iri.ini
+
+# Fill in neighbor addresses separated by space, e.g.
+# IRI_NEIGHBORS="tcp://cfb.is.ai:14600 tcp://iota.rules.io:15600"
+IRI_NEIGHBORS={{ iri_neighbors }}
