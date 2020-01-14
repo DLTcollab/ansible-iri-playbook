@@ -8,7 +8,7 @@ First, you need to install the `Ansible>=2.4`:
 
 ```bash
 # Ubuntu
-$ sudo apt-get install ansible
+$ sudo apt install ansible
 # macOS
 $ brew install ansible
 ```
