@@ -19,8 +19,8 @@ iri_basedir: /var/lib/iri
 # The iri version to install
 iri_version: 1.8.4
 
-# Remote PoW enabled version
-iri_version_remote: false
+# The host to the remote PoW broker
+iri_remote_broker_host: 192.168.0.200
 
 # Official version
 iri_version_official: false
