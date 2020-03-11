@@ -1,10 +1,5 @@
 # --- Ubuntu
 
-# Required, else jq and some other packages fail
-- name: Update all packages to the latest version
-  apt:
-    upgrade: dist
-
 - name: Install software-properties-common
   apt:
     state: latest
