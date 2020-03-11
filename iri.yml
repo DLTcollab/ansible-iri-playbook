@@ -1,7 +1,22 @@
 ---
+- hosts: broker
+  gather_facts: true
+  become: true
+  become_method: sudo
+  roles:
+    - geerlingguy.docker
+    - rabbitmq-management
+
 - hosts: fullnode
   gather_facts: true
   become: true
   become_method: sudo
   roles:
     - iri
+
+- hosts: remote-worker
+  gather_facts: true
+  become: true
+  become_method: sudo
+  roles:
+    - dcurl
