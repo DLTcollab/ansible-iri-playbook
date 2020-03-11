@@ -1,0 +1,9 @@
+- name: restart rabbitmq-management
+  systemd:
+    name: '{{ rabbitmq_management_systemd }}'
+    state: restarted
+    daemon_reload: yes
+    enabled: yes
+
+- name: reload systemd
+  command: systemctl daemon-reload

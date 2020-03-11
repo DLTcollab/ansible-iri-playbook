@@ -1,0 +1,5 @@
+rabbitmq_management_name: rabbitmq-management
+rabbitmq_management_basedir: '/opt/{{ rabbitmq_management_name }}'
+rabbitmq_management_systemd: '{{ rabbitmq_management_name }}.service'
+
+rabbitmq_management_datadir: '{{ rabbitmq_management_basedir }}/datadir'

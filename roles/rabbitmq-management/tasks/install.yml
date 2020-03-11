@@ -1,0 +1,38 @@
+- name: set variables centos/redhat
+  set_fact:
+    systemd_dir: /usr/lib/systemd/system
+    config_dir: /etc/sysconfig
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+  tags: always
+
+- name: set variables debian/ubuntu
+  set_fact:
+    systemd_dir: /etc/systemd/system
+    config_dir: /etc/default
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  tags: always
+
+- name: ensure rabbitmq-management basedir ownership and permissions
+  file:
+    path: '{{ rabbitmq_management_basedir }}'
+    state: directory
+    mode: 0700
+
+- name: ensure rabbitmq-management datador ownership and permissions
+  file:
+    path: '{{ rabbitmq_management_datadir }}'
+    state: directory
+    mode: 0700
+
+- name: copy rabbitmq-management systemd file
+  template:
+    src: templates/rabbitmq-management.service.j2
+    dest: '{{ systemd_dir }}/{{ rabbitmq_management_systemd }}'
+  notify:
+    - restart rabbitmq-management
+
+- name: ensure rabbitmq-management started and enabled
+  systemd:
+    name: '{{ rabbitmq_management_systemd }}'
+    state: started
+    enabled: true
