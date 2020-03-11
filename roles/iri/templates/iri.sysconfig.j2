@@ -26,7 +26,7 @@ REMOTE_LIMIT_API="{{ iri_remote_limit_api }}"
 
 # Optional OPTIONS can contain multiple values e.g.
 #OPTIONS="--remote true --testnet true"
-OPTIONS="{% if api_port_remote is defined and api_port_remote %}--remote true{% endif %} {% if iri_version_remote is defined and iri_version_remote %}--pearldiver-exlib dcurl{% endif %}"
+OPTIONS="{% if api_port_remote is defined and api_port_remote %}--remote true{% endif %} --pearldiver-exlib dcurl --broker-host {{ iri_remote_broker_host }}"
 
 # IRI Configuration file. Basically, most options can either
 # be provided as commandline arguments to iri or via this file.
