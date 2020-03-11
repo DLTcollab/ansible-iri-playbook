@@ -1,0 +1,27 @@
+- hosts: remote-worker
+  become: true
+  vars:
+    ansible_user: ubuntu
+    ansible_password: temppwd
+    ansible_become_pass: temppwd
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - name: Install some packages
+      apt:
+        name: '{{ packages }}'
+        update_cache: yes
+      vars:
+        packages:
+          - python
+          - unzip
+
+    - name: Set authorized key for user ubuntu copying it from current user
+      authorized_key:
+        user: ubuntu
+        state: present
+        key: "{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+
+    - name: Allow sudo without password
+      copy:
+        content: 'ubuntu ALL=(ALL) NOPASSWD:ALL'
+        dest: '/etc/sudoers.d/ubuntu'
