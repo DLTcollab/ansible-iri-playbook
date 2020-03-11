@@ -1,0 +1,10 @@
+remote_worker_name: remote-worker
+remote_worker_basedir: '/opt/{{ remote_worker_name }}'
+remote_worker_driver: '{{ remote_worker_basedir }}/cpowdrv.ko'
+remote_worker_execute: '{{ remote_worker_basedir }}/remote-worker'
+remote_worker_systemd: '{{ remote_worker_name }}.service'
+remote_worker_broker: '127.0.0.1'
+
+remote_worker_driver_url: 'https://www.dropbox.com/s/z5ckn3d6t3hfuc8/cpowdrv.tar.gz?dl=1'
+remote_worker_execute_url: 'https://www.dropbox.com/s/9srpcgtr41tou3d/remote-worker.tar.gz?dl=1'
+remote_worker_execute_local:

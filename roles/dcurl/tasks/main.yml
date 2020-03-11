@@ -1,0 +1,8 @@
+- import_tasks: remote-worker.yml
+  tags:
+    - remote_worker_restart
+
+- import_tasks: uninstall.yml
+  tags:
+    - uninstall
+  when: uninstall_playbook is defined and uninstall_playbook|bool == True

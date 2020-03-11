@@ -1,0 +1,79 @@
+- name: set variables centos/redhat
+  set_fact:
+    systemd_dir: /usr/lib/systemd/system
+    config_dir: /etc/sysconfig
+  when: ansible_distribution == 'CentOS' or ansible_distribution == 'Red Hat Enterprise Linux'
+  tags: always
+
+- name: set variables debian/ubuntu
+  set_fact:
+    systemd_dir: /etc/systemd/system
+    config_dir: /etc/default
+  when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
+  tags: always
+
+- name: ensure remote-worker basedir ownership and permissions
+  file:
+    path: '{{ remote_worker_basedir }}'
+    state: directory
+    mode: 0700
+
+- name: install remote-worker from local
+  block:
+    - name: Copy file to remote
+      copy:
+        src: '{{ remote_worker_execute_local }}'
+        dest: '{{ remote_worker_basedir }}'
+
+    - name: ensure remote-worker ownership and permissions
+      file:
+        path: '{{ remote_worker_execute }}'
+        mode: 0755
+      notify:
+        - restart remote-worker
+  when: remote_worker_execute_local is string
+
+- name: install remote-worker from url
+  block:
+    - name: copy remote-worker.tar.gz to basedir
+      get_url:
+        url: '{{ remote_worker_execute_url }}'
+        dest: '{{ remote_worker_basedir }}/remote-worker.tar.gz'
+
+    - name: extract remote-worker.tar.gz
+      unarchive:
+        src: '{{ remote_worker_basedir }}/remote-worker.tar.gz'
+        dest: '{{ remote_worker_basedir }}'
+        remote_src: yes
+      notify:
+        - restart remote-worker
+  when: remote_worker_execute_local is none
+
+- name: copy cpowdrv.tar.gz to basedir
+  get_url:
+    url: '{{ remote_worker_driver_url }}'
+    dest: '{{ remote_worker_basedir }}/cpowdrv.tar.gz'
+    force: yes
+
+- name: extract cpowdrv.tar.gz
+  unarchive:
+    src: '{{ remote_worker_basedir }}/cpowdrv.tar.gz'
+    dest: '{{ remote_worker_basedir }}'
+    remote_src: yes
+  notify:
+    - restart remote-worker
+
+- name: copy remote-worker systemd file
+  template:
+    src: templates/remote-worker.service.j2
+    dest: '{{ systemd_dir }}/{{ remote_worker_systemd }}'
+  tags:
+    - remote_worker_service_file
+  notify:
+    - restart remote-worker
+
+- name: ensure remote-worker started and enabled
+  systemd:
+    name: '{{ remote_worker_systemd }}'
+    state: started
+    enabled: true

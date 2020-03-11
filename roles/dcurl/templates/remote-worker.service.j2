@@ -1,0 +1,13 @@
+[Unit]
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+WorkingDirectory={{ remote_worker_basedir }}
+ExecStartPre=-/sbin/insmod {{ remote_worker_driver }}
+ExecStart={{ remote_worker_execute }} --broker {{ remote_worker_broker }}
+Restart=always
+RestartSec=12
+
+[Install]
+WantedBy=multi-user.target

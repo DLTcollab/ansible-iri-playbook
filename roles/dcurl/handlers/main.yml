@@ -1,0 +1,9 @@
+- name: restart remote-worker
+  systemd:
+    name: '{{ remote_worker_systemd }}'
+    state: restarted
+    daemon_reload: yes
+    enabled: yes
+
+- name: reload systemd
+  command: systemctl daemon-reload
