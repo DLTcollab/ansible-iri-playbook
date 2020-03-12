@@ -1,7 +1,4 @@
 [fullnode]
-# Here the host on which to install and run iri
-# If using a remote host use either IP or a resolvable name.
-# Also, remove the ansible_connection=local if a remote host.
 node ansible_host=192.168.0.201 ansible_user=ubuntu
 
 [broker]
