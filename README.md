@@ -88,3 +88,32 @@ After modifying the fullnode variables, overwrite the existing setting:
 ```bash
 $ ansible-playbook iri.yml -e overwrite=yes
 ```
+
+To change service status:
+
+```bash
+$ ansible-playbook manage.yml -e systemd_status=[status]
+```
+
+The acceptable **[status]** are
+
+- `started`
+- `restarted`
+- `stopped`
+
+You could use the [--limit](https://ansible-tips-and-tricks.readthedocs.io/en/latest/ansible/commands/#limit-to-one-or-more-hosts) to change the service status against one or more members.
+
+```bash
+$ ansible-playbook manage.yml --limit [group/host] -e systemd_status=[status]
+```
+
+The acceptable **[group/host]** are
+
+- `fullnode`
+- `broker`
+- `remote-worker`
+- `node`
+- `remote-worker-1`
+- `remote-worker-2`
+- `remote-worker-3`
+- `remote-worker-4`

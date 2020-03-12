@@ -1,0 +1,33 @@
+---
+- hosts: broker
+  gather_facts: true
+  become: true
+  become_method: sudo
+  tasks:
+    - name: change rabbitmq status
+      systemd:
+        name: "rabbitmq"
+        state: '{{ systemd_status }}'
+      when: systemd_status is defined and systemd_status is string
+
+- hosts: fullnode
+  gather_facts: true
+  become: true
+  become_method: sudo
+  tasks:
+    - name: change fullnode status
+      systemd:
+        name: "iri"
+        state: '{{ systemd_status }}'
+      when: systemd_status is defined and systemd_status is string
+
+- hosts: remote-worker
+  gather_facts: true
+  become: true
+  become_method: sudo
+  tasks:
+  - name: change remote-worker status
+    systemd:
+      name: "remote-worker"
+      state: '{{ systemd_status }}'
+    when: systemd_status is defined and systemd_status is string
