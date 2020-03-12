@@ -1,0 +1,5 @@
+rabbitmq_name: rabbitmq
+rabbitmq_basedir: '/opt/{{ rabbitmq_name }}'
+rabbitmq_systemd: '{{ rabbitmq_name }}.service'
+
+rabbitmq_datadir: '{{ rabbitmq_basedir }}/datadir'

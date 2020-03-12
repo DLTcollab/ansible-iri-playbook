@@ -10,16 +10,16 @@
     config_dir: /etc/default
   when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
 
-- name: ensure rabbitmq-management stopped
+- name: ensure rabbitmq stopped
   systemd:
-    name: '{{ rabbitmq_management_systemd }}'
+    name: '{{ rabbitmq_systemd }}'
     state: stopped
     enabled: false
   ignore_errors: yes
 
-- name: remove rabbitmq-management service file
+- name: remove rabbitmq service file
   file:
-    path: '{{ systemd_dir }}/{{ rabbitmq_management_systemd }}'
+    path: '{{ systemd_dir }}/{{ rabbitmq_systemd }}'
     state: absent
   notify:
     - reload systemd

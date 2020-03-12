@@ -12,27 +12,27 @@
   when: ansible_distribution == 'Debian' or ansible_distribution == 'Ubuntu'
   tags: always
 
-- name: ensure rabbitmq-management basedir ownership and permissions
+- name: ensure rabbitmq basedir ownership and permissions
   file:
-    path: '{{ rabbitmq_management_basedir }}'
+    path: '{{ rabbitmq_basedir }}'
     state: directory
     mode: 0700
 
-- name: ensure rabbitmq-management datador ownership and permissions
+- name: ensure rabbitmq datador ownership and permissions
   file:
-    path: '{{ rabbitmq_management_datadir }}'
+    path: '{{ rabbitmq_datadir }}'
     state: directory
     mode: 0700
 
-- name: copy rabbitmq-management systemd file
+- name: copy rabbitmq systemd file
   template:
-    src: templates/rabbitmq-management.service.j2
-    dest: '{{ systemd_dir }}/{{ rabbitmq_management_systemd }}'
+    src: templates/rabbitmq.service.j2
+    dest: '{{ systemd_dir }}/{{ rabbitmq_systemd }}'
   notify:
-    - restart rabbitmq-management
+    - restart rabbitmq
 
-- name: ensure rabbitmq-management started and enabled
+- name: ensure rabbitmq started and enabled
   systemd:
-    name: '{{ rabbitmq_management_systemd }}'
+    name: '{{ rabbitmq_systemd }}'
     state: started
     enabled: true
