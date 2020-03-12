@@ -19,4 +19,4 @@
   become: true
   become_method: sudo
   roles:
-    - dcurl
+    - remote-worker
