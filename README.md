@@ -34,9 +34,21 @@ $ ansible-galaxy install --roles-path ~/.ansible/roles -r requirements.yml
 
 ### Getting Started
 
-#### Setup FPGA Remote Worker
+1. Modify the `inventory` file according to your settings.
 
-1. Modify the `inventory` according to your settings.
+Example:
+
+```
+[fullnode]
+node ansible_host=192.168.0.201 ansible_user=ubuntu
+```
+
+| | Description |
+|-|-|
+| [fullnode] | The group name |
+| node | The service name |
+| ansible_host=192.168.0.201 | The hostname or the IP address of the service |
+| ansible_user=ubuntu | The ID for SSH logging in to the service hardware |
 
 2. Setup SSH public key to all your `remote worker`:
 
@@ -61,6 +73,9 @@ Example:
 | Remote Worker | [ansible-iri-playbook/group_vars/remote-worker/remote-worker.yml](https://github.com/DLTcollab/ansible-iri-playbook/blob/master/group_vars/remote-worker/remote-worker.yml) | remote_worker_broker |
 
 5. Build the whole infrastructure:
+
+The default setting is to activate the RabbitMQ first, then the IRI and the remote workers.
+Beware that the RabbitMQ must be the first one, otherwise the connection between the services can not be set up.
 
 ```bash
 $ ansible-playbook iri.yml
