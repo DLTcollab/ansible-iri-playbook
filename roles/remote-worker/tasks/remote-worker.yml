@@ -37,7 +37,7 @@
   block:
     - name: copy remote-worker.tar.gz to basedir
       get_url:
-        url: '{{ remote_worker_execute_url }}'
+        url: '{{ remote_worker_download_url }}'
         dest: '{{ remote_worker_basedir }}/remote-worker.tar.gz'
 
     - name: extract remote-worker.tar.gz
@@ -49,19 +49,15 @@
         - restart remote-worker
   when: remote_worker_execute_local is none
 
-- name: copy cpowdrv.tar.gz to basedir
-  get_url:
-    url: '{{ remote_worker_driver_url }}'
-    dest: '{{ remote_worker_basedir }}/cpowdrv.tar.gz'
-    force: yes
+- name: check if cpowdrv.ko exists
+  stat:
+    path: '{{ remote_worker_driver }}'
+  register: found_driver
 
-- name: extract cpowdrv.tar.gz
-  unarchive:
-    src: '{{ remote_worker_basedir }}/cpowdrv.tar.gz'
-    dest: '{{ remote_worker_basedir }}'
-    remote_src: yes
-  notify:
-    - restart remote-worker
+- name: ensure cpowdrv.ko exists
+  fail:
+    msg: "cpowdrv.ko not exist in {{ remote_worker_driver }}"
+  when: found_driver.stat.exists|bool == False or found_driver.stat.isreg|bool == False
 
 - name: copy remote-worker systemd file
   template:

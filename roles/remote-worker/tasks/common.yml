@@ -1,0 +1,4 @@
+- name: set remote-worker download URL
+  block:
+    - set_fact:
+        remote_worker_download_url: "https://github.com/DLTcollab/dcurl/releases/download/{{ remote_worker_version }}/remote-worker.tar.gz"
