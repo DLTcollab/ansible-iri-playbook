@@ -36,3 +36,15 @@
     name: '{{ rabbitmq_systemd }}'
     state: started
     enabled: true
+
+- name: ensure incoming_queue exists
+  block:
+    - name: check if incoming_queue exists
+      shell: /usr/bin/docker exec -i rabbitmq-dltcollab rabbitmqadmin list queues | grep incoming_queue
+      changed_when: no
+      failed_when: no
+      register: found_queue
+
+    - name: declare incoming_queue
+      shell: /usr/bin/docker exec -i rabbitmq-dltcollab rabbitmqadmin declare queue name=incoming_queue queue_type=classic
+      when: found_queue.rc != 0
