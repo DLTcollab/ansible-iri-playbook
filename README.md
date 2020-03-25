@@ -34,51 +34,70 @@ $ ansible-galaxy install --roles-path ~/.ansible/roles -r requirements.yml
 
 ### Getting Started
 
-1. Modify the `inventory` file according to your settings.
+#### Fullnode, Broker and Remote Worker
 
-Example:
+1. Add your SSH public key to your `fullnode`, `broker` and `remote-worker`, and make sure you can access them via SSH.
+
+For quickly adding the SSH public key to multiple remote workers, please check [Optional: Set up Remote Worker SSH Public Key](#optional-set-up-remote-worker-ssh-public-key).
+
+2. According to your SSH settings, add `fullnode`, `broker` and `remote-worker` to `inventory`.
+
+For example:
 
 ```
 [fullnode]
 node ansible_host=192.168.0.201 ansible_user=ubuntu
 ```
 
-| | Description |
-|-|-|
-| [fullnode] | The group name |
-| node | The service name |
-| ansible_host=192.168.0.201 | The hostname or the IP address of the service |
-| ansible_user=ubuntu | The ID for SSH logging in to the service hardware |
+| Keyword                    | Description                                       |
+| -------------------------- | ------------------------------------------------- |
+| [fullnode]                 | The group name                                    |
+| node                       | The service name                                  |
+| ansible_host=192.168.0.201 | The hostname or the IP address of the service     |
+| ansible_user=ubuntu        | The ID for SSH logging in to the service hardware |
 
-2. Setup SSH public key to all your `remote worker`:
-
-```bash
-# copy ~/.ssh/id_rsa.pub to all remote worker.
-$ ansible-playbook setup-fpga-boards.yml
-```
-
-3. Test the connection to these machines:
+3. Test the connection:
 
 ```bash
 $ ansible-playbook ping-all.yml
 ```
 
-4. Modify the variables in `group_vars/*` and `host_vars/*`.
+#### Build Infrastructure
+
+1. Modify the variables in `group_vars/*` and `host_vars/*` as you need.
 
 Example:
 
-| Assign RabbitMQ broker service hostname or IP address | File | Variable |
-|:-:|-|-|
-| IRI | [ansible-iri-playbook/group_vars/fullnode/iri.yml](https://github.com/DLTcollab/ansible-iri-playbook/tree/master/group_vars/fullnode/iri.yml) | iri_remote_broker_host |
-| Remote Worker | [ansible-iri-playbook/group_vars/remote-worker/remote-worker.yml](https://github.com/DLTcollab/ansible-iri-playbook/blob/master/group_vars/remote-worker/remote-worker.yml) | remote_worker_broker |
+| Assign RabbitMQ broker service hostname or IP address | File                                                                                                                                                                        | Variable               |
+| :---------------------------------------------------: | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+|                          IRI                          | [ansible-iri-playbook/group_vars/fullnode/iri.yml](https://github.com/DLTcollab/ansible-iri-playbook/tree/master/group_vars/fullnode/iri.yml)                               | iri_remote_broker_host |
+|                     Remote Worker                     | [ansible-iri-playbook/group_vars/remote-worker/remote-worker.yml](https://github.com/DLTcollab/ansible-iri-playbook/blob/master/group_vars/remote-worker/remote-worker.yml) | remote_worker_broker   |
 
-5. Build the whole infrastructure:
+2. Build the whole infrastructure:
 
 The default setting is to activate the RabbitMQ first, then the IRI and the remote workers.
 Beware that the RabbitMQ must be the first one, otherwise the connection between the services can not be set up.
 
 ```bash
 $ ansible-playbook iri.yml
+```
+
+#### Optional: Set up Remote Worker SSH Public Key
+
+If you are using [de10nano-image](https://github.com/DLTcollab/de10nano-image) system image to remote-worker, you could use the playbook to help you set up SSH access.
+
+1. Add your remote-worker to `[remote-worker]` group in `inventory`.
+
+2. Copy public key(`~/.ssh/id_rsa.pub`) to all `remote worker`:
+
+```bash
+$ ansible-playbook setup-fpga-boards.yml
+```
+
+3. Test the connection:
+
+```bash
+$ ansible-playbook --limit remote-worker ping-all.yml
 ```
 
 ### FAQ
